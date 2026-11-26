@@ -1,0 +1,71 @@
+{
+  "tools": [
+    {
+      "name": "list_dir",
+      "description": "List files and directories at a path, relative to the workspace.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Directory path. Default '.'"
+          }
+        }
+      }
+    },
+    {
+      "name": "read_file",
+      "description": "Read a UTF-8 text file and return its contents.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "File path relative to workspace."
+          },
+          "max_bytes": {
+            "type": "integer",
+            "description": "Read limit. Default 20000."
+          }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "write_file",
+      "description": "Create or overwrite a text file. Parent directories are created.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "File path relative to workspace."
+          },
+          "content": {
+            "type": "string",
+            "description": "Full file contents to write."
+          }
+        },
+        "required": ["path", "content"]
+      }
+    },
+    {
+      "name": "run_python",
+      "description": "Run a short Python snippet in the workspace and return its output.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Python source to execute."
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "Default 10, max 30."
+          }
+        },
+        "required": ["code"]
+      }
+    }
+  ]
+}
