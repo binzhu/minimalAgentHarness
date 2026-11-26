@@ -2,19 +2,19 @@
 
 A coding agent is not a model with superpowers. It is a **loop** that lets a
 model ask for actions, plus a **harness** that performs them and decides when
-to stop. This project is that loop, in under 900 lines of dependency-free
+to stop. This project is that loop, in about 1,000 lines of dependency-free
 Python, with streaming over plain `http.client` and no SDKs.
 
 ```
 miniagent/
-├── providers.py   # the only code that talks to a model (mock + OpenAI-compatible)
+├── providers.py   # the only code that talks to a model (OpenAI-compatible)
 ├── tools.py       # the agent's hands: Python implementations + dispatch
 ├── harness.py     # the loop, the message history, the guards
 ├── config.py      # loads prompts and tool schemas from files
 config/
 ├── system_prompt.md   # the policy text sent as the system message
 ├── tools.json         # the schemas the model reads to choose a tool
-main.py            # CLI: run the demo, or point it at a real model
+main.py            # CLI: a conversation with the agent
 ```
 
 ---
@@ -85,16 +85,26 @@ internal monologue back as if it had said it out loud.
 
 ## 3. Run it
 
-No dependencies, no API key — a scripted fake model stands in:
+No dependencies. The CLI is a conversation: start it, then keep typing. The
+agent keeps the transcript and resends it on every turn, so it remembers what
+it just did — including the files it read.
 
 ```bash
-python3 main.py --demo
+python3 main.py
 ```
 
-You'll see the full loop: the model asks to list the directory, write a file,
-read it back, then answers. The fake model is a script (`demo_script()` in
-`main.py`), so the output is deterministic — ideal for debugging the harness
-before introducing a real, flaky model.
+```
+you>      list this folder
+...
+you>      now summarise what those files do
+```
+
+`quit`, `exit`, or Ctrl-D ends it. A task given on the command line becomes the
+first message, which is the one-shot form — piped stdin ends the loop after it:
+
+```bash
+python3 main.py "list this folder and summarise what it does"
+```
 
 With a real model (any OpenAI-compatible endpoint):
 
@@ -102,6 +112,31 @@ With a real model (any OpenAI-compatible endpoint):
 export OPENAI_API_KEY=sk-...
 python3 main.py "write a prime checker in check.py and test it with 97"
 ```
+
+### Checking the context budget
+
+Every turn resends the whole transcript, so it grows, while the model's window
+does not. `/context` shows what the next request would send:
+
+```
+you      /context
+
+context   6 messages, 14,203 chars ~ 3,551 tokens (estimate)
+
+  system prompt             1     1,204 chars  ~   301 tok
+  tool schemas              4     3,905 chars  ~   977 tok
+  user messages             3        86 chars  ~    22 tok
+  assistant messages        2       640 chars  ~   160 tok
+  assistant tool calls      2       112 chars  ~    28 tok
+  tool results              2     8,256 chars  ~ 2,064 tok
+  total                           14,203 chars  ~ 3,551 tok
+```
+
+The answer is local: no request is made, no tokens are spent, and it works with
+the server down. Sizes are exact character counts; the token column is
+`chars / 4`, because this harness has no tokenizer and the provider is
+swappable — good enough to see *which* section is eating the window, not exact.
+Tool results dominate most long sessions, so that is the row to watch.
 
 ### Default: the Ollama box on the LAN
 
@@ -240,8 +275,6 @@ Switch it off to compare:
 ```bash
 python3 main.py --no-stream "say what this project is"   # one blob at the end
 ```
-
-`MockProvider` ignores `on_delta`: the fake has no latency to hide.
 
 ---
 

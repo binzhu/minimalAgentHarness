@@ -15,11 +15,52 @@ retries, streaming, persistence, sub-agents, and cost accounting.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from math import ceil
 from typing import Any, Callable
 
 from .providers import AssistantMessage, Provider, ProviderError
 from .tools import Toolbox
+
+
+def estimate_tokens(chars: int) -> int:
+    """~4 characters per token, the usual rule of thumb for prose and code.
+
+    There is no tokenizer here on purpose: adding one would pin the harness to
+    a single model's vocabulary, and the provider is swappable. So `/context`
+    reports an estimate and says so, rather than a number it cannot stand behind.
+    """
+    return ceil(chars / 4)
+
+
+@dataclass
+class ContextSection:
+    """One line of the `/context` report: a kind of content and how big it is."""
+
+    label: str
+    count: int  # messages, tool schemas, tool calls — whatever this row counts
+    chars: int
+
+    @property
+    def tokens(self) -> int:
+        return estimate_tokens(self.chars)
+
+
+@dataclass
+class ContextReport:
+    """What the *next* request would send, split by where it comes from."""
+
+    sections: list[ContextSection]
+
+    @property
+    def chars(self) -> int:
+        return sum(section.chars for section in self.sections)
+
+    @property
+    def tokens(self) -> int:
+        return estimate_tokens(self.chars)
+
 
 @dataclass
 class AgentResult:
@@ -41,6 +82,8 @@ class Agent:
     system_prompt: str
     max_steps: int = 12
     on_event: Callable[[str, dict[str, Any]], None] | None = None
+    # The transcript. It is deliberately *not* reset between run() calls — that
+    # is what makes run() one turn of a conversation rather than all of it.
     messages: list[dict] = field(default_factory=list)
 
     # -- observability ------------------------------------------------------ #
@@ -58,15 +101,57 @@ class Agent:
         """
         self._emit("delta", kind=kind, text=text)
 
+    # -- context accounting ------------------------------------------------- #
+
+    def context_report(self) -> ContextReport:
+        """Where the next request's context goes, one section at a time.
+
+        Counted in characters, because characters are exact; the token figure
+        built on top of them is the estimate. Empty sections stay in the report:
+        after a long session, "tool results: 0" is part of the answer.
+        """
+        sizes = {"system": 0, "user": 0, "assistant": 0, "tool_calls": 0, "tool": 0}
+        counts = dict.fromkeys(sizes, 0)
+
+        for message in self.messages:
+            role = message.get("role")
+            content = message.get("content") or ""
+            if role in sizes:
+                sizes[role] += len(content)
+                counts[role] += 1
+            # Tool calls are prompt too: the model needs the name and the raw
+            # arguments it sent, even though they are not the message content.
+            for call in message.get("tool_calls") or []:
+                sizes["tool_calls"] += len(json.dumps(call["function"]))
+                counts["tool_calls"] += 1
+
+        # A fresh agent has no system message yet — run() seeds it on the first
+        # turn — so report the prompt that is about to be sent.
+        if not counts["system"]:
+            sizes["system"] = len(self.system_prompt)
+            counts["system"] = 1
+
+        # Tool schemas never live in `messages`, but they travel with every
+        # request, so they are part of what a turn costs.
+        schemas = self.toolbox.schemas()
+        return ContextReport([
+            ContextSection("system prompt", counts["system"], sizes["system"]),
+            ContextSection("tool schemas", len(schemas), len(json.dumps(schemas))),
+            ContextSection("user messages", counts["user"], sizes["user"]),
+            ContextSection("assistant messages", counts["assistant"], sizes["assistant"]),
+            ContextSection("assistant tool calls", counts["tool_calls"], sizes["tool_calls"]),
+            ContextSection("tool results", counts["tool"], sizes["tool"]),
+        ])
+
     # -- the loop ----------------------------------------------------------- #
 
     def run(self, task: str) -> AgentResult:
-        # The conversation *is* the agent's memory. Everything it knows about
-        # the task lives in this list, which is why it is sent in full each turn.
-        self.messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": task},
-        ]
+        # The conversation *is* the agent's memory: the whole list goes to the
+        # provider on every turn, so the model can stay stateless. Calling run()
+        # again continues this transcript instead of starting over.
+        if not self.messages:
+            self.messages = [{"role": "system", "content": self.system_prompt}]
+        self.messages.append({"role": "user", "content": task})
         tools = self.toolbox.schemas()
         self._emit("start", task=task, tools=self.toolbox.names)
 

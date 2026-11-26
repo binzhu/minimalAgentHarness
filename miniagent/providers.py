@@ -1,7 +1,7 @@
 """Model providers.
 
 A *provider* is the only part of the harness that talks to a model. The harness
-never knows whether it is talking to GPT, Llama, or a scripted fake — it just
+never knows whether it is talking to GPT, Llama, or a box on the LAN — it just
 calls `complete(messages, tools)` and gets back an `AssistantMessage`.
 
 Messages use the OpenAI chat format, which has become the de-facto shape for
@@ -79,43 +79,6 @@ class Provider(Protocol):
         tools: list[dict],
         on_delta: DeltaHandler | None = None,
     ) -> AssistantMessage: ...
-
-
-# --------------------------------------------------------------------------- #
-# A fake model, for learning (and for offline development)
-# --------------------------------------------------------------------------- #
-
-
-class MockProvider:
-    """A scripted stand-in for a model.
-
-    Real models are non-deterministic and cost money, which makes them a bad
-    place to start debugging a harness. This provider replays a fixed script,
-    so you can see the loop work before you plug in an API key.
-
-    Each script entry is either an `AssistantMessage` or a callable that
-    receives the current history and returns one.
-
-    It ignores `on_delta`: there is no latency to hide, and answering instantly
-    is the whole point of a fake.
-    """
-
-    def __init__(self, script: list[AssistantMessage | Callable[[list[dict]], AssistantMessage]]):
-        self.script = list(script)
-        self.calls = 0
-
-    def complete(
-        self,
-        messages: list[dict],
-        tools: list[dict],
-        on_delta: DeltaHandler | None = None,
-    ) -> AssistantMessage:
-        self.calls += 1
-        if self.calls > len(self.script):
-            # A real model would keep going; the script just stops.
-            return AssistantMessage("(mock: script exhausted, nothing left to do)")
-        step = self.script[self.calls - 1]
-        return step(messages) if callable(step) else step
 
 
 # --------------------------------------------------------------------------- #

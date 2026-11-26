@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Run the mini agent.
 
-Offline demo (no API key, scripted fake model):
+Local Ollama on the LAN (the default provider), as a back-and-forth conversation:
 
-    python3 main.py --demo
-
-Local Ollama on the LAN (the default provider):
-
+    python3 main.py
     python3 main.py "list this folder and summarise what it does"
     python3 main.py --model qwen2.5-coder:14b "write fizzbuzz.py and test it"
     python3 main.py --no-stream "same task, but wait for the whole turn"
@@ -15,12 +12,14 @@ Any OpenAI-compatible endpoint:
 
     export OPENAI_API_KEY=sk-...
     python3 main.py --provider openai --model gpt-4o-mini "summarise this repo"
+
+Type `/context` at the prompt to see what the next request will send, split by
+system prompt, tool schemas, and each kind of message. It is answered locally.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -29,11 +28,8 @@ from miniagent import (
     DEFAULT_PROMPT_PATH,
     DEFAULT_TOOLS_PATH,
     Agent,
-    AssistantMessage,
     ConfigError,
-    MockProvider,
     OpenAICompatibleProvider,
-    ToolCall,
     build_toolbox,
     load_text,
 )
@@ -117,49 +113,32 @@ def render(kind: str, event: dict) -> None:
     elif kind == "error":
         _close_stream()
         print(f"{BOLD}error{RESET}    {event['message']}", file=sys.stderr)
+        # A turn that never produced a reply must not leak into the next one.
+        _ui["streamed_turn"] = False
 
 
-def demo_script() -> list:
-    """What a well-behaved model *would* emit for the demo task.
+def show_context(agent: Agent) -> None:
+    """`/context` — a local answer, so it costs nothing and works offline."""
+    report = agent.context_report()
+    label_width = max(len(section.label) for section in report.sections)
 
-    The last step is a callable so it can read the real tool output — the same
-    way a real model reacts to what it just saw.
-    """
-    box = {"path": "notes/hello.txt", "content": "Hello from your first agent loop.\n"}
-
-    def announce(messages: list[dict]) -> AssistantMessage:
-        last = messages[-1]["content"] if messages else ""
-        return AssistantMessage(
-            content=(
-                "Done. I listed the workspace, wrote notes/hello.txt, and read it "
-                f"back to confirm.\nThe file now contains: {json.dumps(last)}"
-            )
-        )
-
-    return [
-        AssistantMessage(
-            content="I'll see what is here first.",
-            tool_calls=[ToolCall("call_1", "list_dir", json.dumps({"path": "."}))],
-        ),
-        AssistantMessage(
-            tool_calls=[
-                ToolCall("call_2", "write_file", json.dumps(box)),
-            ]
-        ),
-        AssistantMessage(
-            tool_calls=[ToolCall("call_3", "read_file", json.dumps({"path": box["path"]}))],
-        ),
-        announce,
-    ]
+    print(f"\n{BOLD}context{RESET}   {len(agent.messages)} messages, "
+          f"{report.chars:,} chars ~ {report.tokens:,} tokens (estimate)\n")
+    for section in report.sections:
+        print(f"  {section.label:<{label_width}}  {section.count:>4}  "
+              f"{section.chars:>8,} chars  ~{section.tokens:>6,} tok")
+    print(f"  {'total':<{label_width}}  {'':>4}  "
+          f"{report.chars:>8,} chars  ~{report.tokens:>6,} tok\n")
+    print(f"{DIM}estimate is chars / 4; JSON framing and chat-template tokens "
+          f"are not counted{RESET}\n")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="A minimal agent harness.")
-    parser.add_argument("task", nargs="?", default="Inspect this folder and create notes/hello.txt",
-                        help="What you want the agent to do")
-    parser.add_argument("--demo", action="store_true", help="Run the offline scripted demo")
-    parser.add_argument("--provider", choices=["mock", "ollama", "openai"], default="ollama",
-                        help="'ollama' = LAN Ollama with local defaults; 'mock' = offline demo")
+    parser.add_argument("task", nargs="?",
+                        help="First message. Omit it to start with an empty conversation")
+    parser.add_argument("--provider", choices=["ollama", "openai"], default="ollama",
+                        help="'ollama' = LAN Ollama with local defaults")
     parser.add_argument("--model", default=os.environ.get("MINIAGENT_MODEL"))
     parser.add_argument("--base-url", default=os.environ.get("MINIAGENT_BASE_URL"))
     parser.add_argument("--api-key", default=os.environ.get("MINIAGENT_API_KEY") or os.environ.get("OPENAI_API_KEY"))
@@ -184,28 +163,25 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    if args.demo or args.provider == "mock":
-        provider = MockProvider(demo_script())
+    if args.provider == "ollama":
+        base_url = args.base_url or OLLAMA_BASE_URL
+        model = args.model or OLLAMA_MODEL
+        # Ollama ignores the key, but the Authorization header must be present.
+        api_key = args.api_key or "ollama"
     else:
-        if args.provider == "ollama":
-            base_url = args.base_url or OLLAMA_BASE_URL
-            model = args.model or OLLAMA_MODEL
-            # Ollama ignores the key, but the Authorization header must be present.
-            api_key = args.api_key or "ollama"
-        else:
-            base_url = args.base_url or "https://api.openai.com/v1"
-            model = args.model or "gpt-4o-mini"
-            api_key = args.api_key
-            if not api_key:
-                print("error: no API key. Set OPENAI_API_KEY or pass --api-key.", file=sys.stderr)
-                return 2
-        mode = "buffered" if args.no_stream else "streaming"
-        print(f"{DIM}{model} @ {base_url} ({mode}){RESET}")
-        print(f"{DIM}prompt {prompt_path}{RESET}")
-        print(f"{DIM}tools  {tools_path}{RESET}\n")
-        provider = OpenAICompatibleProvider(
-            model=model, api_key=api_key, base_url=base_url, stream=not args.no_stream
-        )
+        base_url = args.base_url or "https://api.openai.com/v1"
+        model = args.model or "gpt-4o-mini"
+        api_key = args.api_key
+        if not api_key:
+            print("error: no API key. Set OPENAI_API_KEY or pass --api-key.", file=sys.stderr)
+            return 2
+    mode = "buffered" if args.no_stream else "streaming"
+    print(f"{DIM}{model} @ {base_url} ({mode}){RESET}")
+    print(f"{DIM}prompt {prompt_path}{RESET}")
+    print(f"{DIM}tools  {tools_path}{RESET}\n")
+    provider = OpenAICompatibleProvider(
+        model=model, api_key=api_key, base_url=base_url, stream=not args.no_stream
+    )
 
     agent = Agent(
         provider=provider,
@@ -214,12 +190,47 @@ def main() -> int:
         max_steps=args.max_steps,
         on_event=render,
     )
-    result = agent.run(args.task)
+    exit_code = 0
 
-    if result.stop_reason == "provider_error":
-        print(f"\nprovider error: {result.error}", file=sys.stderr)
-        return 1
-    return 0
+    def turn(text: str) -> None:
+        """One exchange. A provider error ends this turn, not the session."""
+        nonlocal exit_code
+        try:
+            result = agent.run(text)
+        except KeyboardInterrupt:
+            # Ctrl-C during a turn leaves a half-finished transcript behind, so
+            # quit rather than continue from it: an assistant message with tool
+            # calls but no matching tool results is rejected by any server.
+            print()
+            raise SystemExit(130)
+        if result.stop_reason == "provider_error":
+            print(f"\nprovider error: {result.error}", file=sys.stderr)
+            exit_code = 1
+
+    if args.task:
+        turn(args.task)
+
+    print(f"{DIM}type 'quit' or press Ctrl-D to end the conversation, "
+          f"/context for the context budget{RESET}")
+    while True:
+        try:
+            line = input(f"{BOLD}you{RESET}      ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not line:
+            continue
+        if line in {"quit", "exit"}:
+            break
+        if line == "/context":
+            # Handled here, not by the agent: this is a question about the
+            # transcript, and answering it through the model would be both
+            # slower and a way to grow the very context it is reporting on.
+            show_context(agent)
+            continue
+        turn(line)
+
+    return exit_code
 
 
 if __name__ == "__main__":

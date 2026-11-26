@@ -7,10 +7,15 @@ from .config import (
     load_text,
     load_tool_schemas,
 )
-from .harness import Agent, AgentResult
+from .harness import (
+    Agent,
+    AgentResult,
+    ContextReport,
+    ContextSection,
+    estimate_tokens,
+)
 from .providers import (
     AssistantMessage,
-    MockProvider,
     OpenAICompatibleProvider,
     Provider,
     ProviderError,
@@ -22,10 +27,11 @@ __all__ = [
     "Agent",
     "AgentResult",
     "ConfigError",
+    "ContextReport",
+    "ContextSection",
     "DEFAULT_PROMPT_PATH",
     "DEFAULT_TOOLS_PATH",
     "AssistantMessage",
-    "MockProvider",
     "OpenAICompatibleProvider",
     "Provider",
     "ProviderError",
@@ -34,6 +40,7 @@ __all__ = [
     "Toolbox",
     "ToolError",
     "build_toolbox",
+    "estimate_tokens",
     "load_text",
     "load_tool_schemas",
 ]
