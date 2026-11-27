@@ -70,7 +70,8 @@ def render(kind: str, event: dict) -> None:
         return
 
     if kind == "start":
-        print(f"{BOLD}task{RESET}     {event['task']}")
+        # The task itself was already echoed by the `you` prompt; reprinting it
+        # here just showed every message twice.
         print(f"{DIM}tools    {', '.join(event['tools'])}{RESET}\n")
 
     elif kind == "assistant":
@@ -208,6 +209,7 @@ def main() -> int:
             exit_code = 1
 
     if args.task:
+        print(f"{BOLD}you{RESET}      {args.task}")
         turn(args.task)
 
     print(f"{DIM}type 'quit' or press Ctrl-D to end the conversation, "
